@@ -308,7 +308,7 @@ int calibrate_o2()
   oled_display.setTextColor(WHITE);
   oled_display.setCursor(0, 0);
   oled_display.setTextSize(1);
-  oled_display.print(F("Calibrate to 20.9% O2.."));
+  oled_display.println(F("Calibrate to 20.9% O2"));
   oled_display.display();
   for (int i = 0; i <= running_average_size*10; i++)
   {
@@ -390,14 +390,7 @@ void draw_status()
 void draw_lock_screen()
 {
   oled_display.setTextSize(1);
-  if (!mode_display_advanced)
-  {
-    oled_display.setTextColor(BLACK, WHITE);
-  }
-  else
-  {
-    oled_display.setTextColor(WHITE);
-  }
+  oled_display.setTextColor(BLACK, WHITE);
   oled_display.setCursor(90, 25);
   oled_display.print(F(" HOLD "));
   oled_display.display();
