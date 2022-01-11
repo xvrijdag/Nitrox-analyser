@@ -29,7 +29,7 @@
 void memory_write_int(int p_address, int p_value);
 unsigned int memory_read_int(int p_address);
 
-int calibrate_o2();
+void calibrate_o2();
 void calculate_o2_from_running_average();
 void read_sensor_to_running_average();
 void draw_status();
@@ -38,16 +38,16 @@ void draw_help();
 void oled_display_text(const __FlashStringHelper *text, int text_size);
 enum program_mode
 {
-  Mode_Help,
-  Mode_ReadSensor,
-  Mode_Calibrate
+  MODE_HELP,
+  MODE_SHOw_O2,
+  MODE_CALIBRATE
 };
 void switch_mode(program_mode mode);
 int update_button_status(bool is_pressed);
 void handle_button_press(int action);
 
 // Running average of 10 values
-const int running_average_size = 10;
+const int running_average_size = 5;
 RunningAverage running_average(running_average_size);
 
 // i2c Address 0x3c or 0x48
@@ -89,13 +89,14 @@ long button_time_released;
 ///
 int calibration_memory_address = 0;
 
-program_mode current_mode = Mode_Help;
+program_mode current_mode = MODE_HELP;
 bool draw_help_done = false;
 
 void setup(void)
 {
   Serial.begin(9600);
   oled_display.begin(SSD1306_SWITCHCAPVCC, oled_address);
+  // rotate display 180 degrees..
   oled_display.setRotation(2);
 
   adc_converter.setGain(adc_gain);
@@ -112,19 +113,18 @@ void setup(void)
   o2_calibration_voltage = memory_read_int(calibration_memory_address);
   if (o2_calibration_voltage > 10000)
   {
-    o2_calibration_voltage = calibrate_o2();
+    calibrate_o2();
   }
 }
 int mode_counter = 0;
 int loop_delay_ms = 5; // execute loop every 10 ms
 bool mode_display_advanced = false;
 bool mode_display_hold = false;
-unsigned long loop_start_ms = millis();
 void loop(void)
 {
   mode_counter++;
  
-  if (current_mode == Mode_Help)
+  if (current_mode == MODE_HELP)
   {
     // only the first time..
     draw_help();
@@ -132,19 +132,19 @@ void loop(void)
 
     if (digitalRead(button_pin) == LOW)
     {
-      switch_mode(Mode_ReadSensor);
+      switch_mode(MODE_SHOw_O2);
     }
     return;
   }
-
-  if (current_mode == Mode_ReadSensor)
+ 
+  if (current_mode == MODE_SHOw_O2)
   {
     // detect button presses.
     if (!mode_display_hold)
     {
       // takes 15ms..
       // execute every 5 updates..
-      if (mode_counter % 5 == 1)
+      if (mode_counter % 10 == 1)
       {
         calculate_o2_from_running_average();
       }
@@ -164,10 +164,10 @@ void loop(void)
     }
   }
 
-  if (current_mode == Mode_Calibrate)
+  if (current_mode == MODE_CALIBRATE)
   {
     calibrate_o2();
-    switch_mode(Mode_ReadSensor);
+    switch_mode(MODE_SHOw_O2);
     draw_status();
   }
 
@@ -204,7 +204,7 @@ void handle_button_press(int action)
 
   if (action == 3)
   {
-    switch_mode(Mode_Calibrate);
+    switch_mode(MODE_CALIBRATE);
     return;
   }
 }
@@ -279,7 +279,6 @@ void switch_mode(program_mode mode)
   // reset mode variables
   draw_help_done = true;
   mode_counter = 0;
-  loop_start_ms = millis();
   reset_button_status(digitalRead(button_pin) == LOW);
   current_mode = mode;
 }
@@ -301,31 +300,25 @@ void read_sensor_to_running_average()
   running_average.addValue(millivolts);
 }
 
-int calibrate_o2()
+void calibrate_o2()
 {
+  for (int i = 0; i <= running_average_size; i++)
+  {
+    read_sensor_to_running_average();
+    delay(loop_delay_ms);
+  }
+  double currentmv = abs(running_average.getAverage());
+  memory_write_int(calibration_memory_address, currentmv); // write to eeprom
+  o2_calibration_voltage = currentmv;
   // show "calibrating"
   oled_display.clearDisplay();
   oled_display.setTextColor(WHITE);
   oled_display.setCursor(0, 0);
-  oled_display.setTextSize(1);
-  oled_display.println(F("Calibrate to 20.9% O2"));
+  oled_display.setTextSize(2);
+  oled_display.println(F("Calibrated"));
+  oled_display.println(F("20.9% O2"));
   oled_display.display();
-  for (int i = 0; i <= running_average_size*10; i++)
-  {
-    read_sensor_to_running_average();
-    if (i % 5 == 0)
-    {
-      oled_display.print(F("."));
-      oled_display.display();
-    } else {
-      delay(loop_delay_ms);
-    }
-  }
-
-  double currentAverage = running_average.getAverage();
-  currentAverage = abs(currentAverage);
-  memory_write_int(calibration_memory_address, currentAverage); // write to eeprom
-  return currentAverage;
+  delay(500);
 }
 
 void oled_display_text(const __FlashStringHelper *text, int text_size)
