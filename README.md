@@ -8,7 +8,7 @@ On/off switch: https://www.aliexpress.com/item/32879359719.html
 9V battery
 Oxygen sensor (R22D) https://www.shearwater.com/wp-content/uploads/2012/08/r22d.pdf 
 
-PCB 29 x 44.8 mm (will be stack of screen - nano - main PCB - ADS1115 + connections):
+PCB 29 x 44.8 mm (will be stack (from top to bottom) of screen - nano - main PCB - ADS1115 + connections):
 Arduino Nano: https://www.aliexpress.com/item/32848298184.html 
 ADS1115: https://www.aliexpress.com/item/32672594709.html 
 0.96” OLED screen: https://www.aliexpress.com/item/32638662748.html 
