@@ -22,35 +22,42 @@
 #include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_SSD1306.h>
-#include <Adafruit_ADS1015.h>
+#include <Adafruit_ADS1X15.h>
 #include <EEPROM.h>
 #include <RunningAverage.h>
 
 void memory_write_int(int p_address, int p_value);
 unsigned int memory_read_int(int p_address);
 
-int calibrate_o2(int address);
+void calibrate_o2();
 void calculate_o2_from_running_average();
 void read_sensor_to_running_average();
-void display_status();
-void lock_screen();
-void oled_display_splash();
+void draw_status();
+void draw_lock_screen();
+void draw_help();
 void oled_display_text(const __FlashStringHelper *text, int text_size);
+enum program_mode
+{
+  MODE_HELP,
+  MODE_SHOw_O2,
+  MODE_CALIBRATE
+};
+void switch_mode(program_mode mode);
+int update_button_status(bool is_pressed);
+void handle_button_press(int action);
 
-
-// Running average of 3 values
-const int running_average_size = 3;
+// Running average of 10 values
+const int running_average_size = 5;
 RunningAverage running_average(running_average_size);
 
- // i2c Address 0x3c or 0x48
+// i2c Address 0x3c or 0x48
 Adafruit_ADS1115 adc_converter;
 const adsGain_t adc_gain = GAIN_SIXTEEN;
 const float adc_multiplier = 0.0078125;
 
 ///
 /// Arduino Configuration
-/// 
-
+///
 // Some displays have a oled reset pin
 // this display does not
 const int oled_reset = -1;
@@ -58,251 +65,346 @@ const int oled_address = 0x3C;
 Adafruit_SSD1306 oled_display(oled_reset);
 
 const int button_pin = 5; // push button
-const int led_pin = 13; // led
+//const int led_pin = 13; // led
 
 ///
 /// Oxygen state
-/// 
-
+///
 double o2_calibration_voltage = 0;
 double o2_percentage = 0.0;
 double sensor_voltage = 0.0;
 
 ///
-/// Button Configuration
-/// 
-
-const int button_holdtime_calibration = 1; // 1 sec button hold to calibration
-const int button_holdtime_advanced = 2; // 2 sec hold to switch to basic screen
-const int button_holdtime_maximum = 3;
-
-///
 /// Button State
-/// 
+///
+const int single_click_timing = 250; // a single click is when only one click occurs within 500ms
+const int hold_click_timing = 1000;  // a long press click is when one click is constant for 2000ms
 
+bool previous_state = false;
 long button_millis_held;    // How long the button was held (milliseconds)
-long button_secs_held;      // How long the button was held (seconds)
 long button_prev_secs_held; // How long the button was held in the previous check
-byte button_previous = HIGH; // What was the previous state
-unsigned long button_first_time_pressed; // how long since the button was first pressed
-int button_active = 0;
-
-
+long button_time_released;
 ///
 /// Menu / display state
 ///
+int calibration_memory_address = 0;
 
-int display_advanced_mode = 0;
-int adv_switched = 0;
-bool show_splash = true;
+program_mode current_mode = MODE_HELP;
+bool draw_help_done = false;
 
-void setup(void) {
+void setup(void)
+{
   Serial.begin(9600);
   oled_display.begin(SSD1306_SWITCHCAPVCC, oled_address);
+  // rotate display 180 degrees..
+  oled_display.setRotation(2);
+
   adc_converter.setGain(adc_gain);
   adc_converter.begin(); // ads1115 start
 
   pinMode(button_pin, INPUT_PULLUP);
 
   running_average.clear();
-  for (int i = 0; i <= running_average_size; i++) {
+  for (int i = 0; i <= running_average_size; i++)
+  {
     read_sensor_to_running_average();
   }
 
-  o2_calibration_voltage = memory_read_int(0);
-  if (o2_calibration_voltage > 10000) {
-    o2_calibration_voltage = calibrate_o2(0);
+  o2_calibration_voltage = memory_read_int(calibration_memory_address);
+  if (o2_calibration_voltage > 10000)
+  {
+    calibrate_o2();
   }
 }
+int mode_counter = 0;
+int loop_delay_ms = 5; // execute loop every 10 ms
+bool mode_display_advanced = false;
+bool mode_display_hold = false;
+void loop(void)
+{
+  mode_counter++;
+ 
+  if (current_mode == MODE_HELP)
+  {
+    // only the first time..
+    draw_help();
+    // detect button..
 
-void loop(void) {
-  // show splash screen once..
-  oled_display_splash();
-
-  int current = digitalRead(button_pin);
-
-
-  if (current == LOW && button_previous == HIGH && (millis() - button_first_time_pressed) > 200) {
-    button_first_time_pressed = millis();
-    button_active = 17;
+    if (digitalRead(button_pin) == LOW)
+    {
+      switch_mode(MODE_SHOw_O2);
+    }
+    return;
   }
+ 
+  if (current_mode == MODE_SHOw_O2)
+  {
+    // detect button presses.
+    if (!mode_display_hold)
+    {
+      // takes 15ms..
+      // execute every 5 updates..
+      if (mode_counter % 10 == 1)
+      {
+        calculate_o2_from_running_average();
+      }
+    }
 
-  button_millis_held = (millis() - button_first_time_pressed);
-  button_secs_held = button_millis_held / 1000;
+    int button_action = update_button_status(digitalRead(button_pin) == LOW);
+    if (button_action != 0)
+    {
+      Serial.println(button_action);
+      handle_button_press(button_action);
+    }
 
-  if (button_millis_held > 2) {
-    if (current == HIGH && button_previous == LOW) {
-      if (button_secs_held < button_holdtime_calibration) {
-        lock_screen();
-      }
-      if (button_secs_held >= button_holdtime_calibration && button_secs_held < button_holdtime_advanced) {
-        o2_calibration_voltage = calibrate_o2(0);
-      }
-      if (button_secs_held >= button_holdtime_advanced && button_secs_held < button_holdtime_maximum && display_advanced_mode == 0) {
-        display_advanced_mode = 1;
-        adv_switched = 1;
-      }
-      if (button_secs_held >= button_holdtime_advanced && button_secs_held < button_holdtime_maximum && display_advanced_mode == 1 && adv_switched == 0) {
-        display_advanced_mode = 0;
-        adv_switched = 0;
-      }
-      adv_switched = 0;
+    // takes 170s ms, execute update every 2s
+    if (mode_counter % 40 == 1 && !mode_display_hold)
+    {
+      draw_status();
     }
   }
-  button_previous = current;
-  button_prev_secs_held = button_secs_held;
 
-  calculate_o2_from_running_average();
-  delay(200);
+  if (current_mode == MODE_CALIBRATE)
+  {
+    calibrate_o2();
+    switch_mode(MODE_SHOw_O2);
+    draw_status();
+  }
 
-  button_active++;
+  delay(loop_delay_ms);
 }
 
-void calculate_o2_from_running_average() {
+void handle_button_press(int action)
+{
+
+  if (action == 1)
+  {
+    // single click
+    mode_display_hold = !mode_display_hold;
+    if (mode_display_hold)
+    {
+      draw_status();
+      draw_lock_screen();
+    }
+    return;
+  }
+
+  if (action == 2)
+  {
+    // double click
+    // advanced mode
+    mode_display_advanced = !mode_display_advanced;
+    if (mode_display_hold)
+    {
+      draw_status();
+      draw_lock_screen();
+    }
+    return;
+  }
+
+  if (action == 3)
+  {
+    switch_mode(MODE_CALIBRATE);
+    return;
+  }
+}
+
+// last time the button was entered
+unsigned long last_down = 0;
+unsigned long last_up = 0;
+bool double_click_started = true;
+bool last_pressed_state = false;
+
+void reset_button_status(bool current_status)
+{
+  last_down = 0;
+  last_up = 0;
+  double_click_started = false;
+  last_pressed_state = current_status;
+}
+
+int update_button_status(bool is_pressed)
+{
+  if (is_pressed && last_pressed_state != is_pressed)
+  {
+    if (millis() - last_up < single_click_timing)
+    {
+      double_click_started = true;
+    }
+    // button was pressed..
+    last_down = millis();
+    last_pressed_state = is_pressed;
+  }
+  else if (!is_pressed && last_pressed_state != is_pressed)
+  {
+    if (last_down == 0)
+    {
+      reset_button_status(is_pressed);
+      return 0;
+    }
+    last_up = millis();
+    // button was released..
+    last_pressed_state = is_pressed;
+
+    if (double_click_started)
+    {
+      reset_button_status(is_pressed);
+      return 2;
+    }
+  }
+  else if (is_pressed && last_pressed_state == is_pressed)
+  {
+    // button was pressed en still is pressed..
+    if (last_down != 0 && millis() - last_down > hold_click_timing)
+    {
+      reset_button_status(is_pressed);
+      return 3;
+    }
+    last_pressed_state = is_pressed;
+  }
+  else if (!is_pressed && last_pressed_state == is_pressed)
+  {
+    // button was not pressed and still is not pressed..
+    if (last_down != 0 && millis() - last_down > single_click_timing)
+    {
+      reset_button_status(is_pressed);
+      return 1;
+    }
+  }
+  return 0;
+}
+
+void switch_mode(program_mode mode)
+{
+  // reset mode variables
+  draw_help_done = true;
+  mode_counter = 0;
+  reset_button_status(digitalRead(button_pin) == LOW);
+  current_mode = mode;
+}
+
+void calculate_o2_from_running_average()
+{
   double currentmv = 0;
   read_sensor_to_running_average();
   currentmv = running_average.getAverage();
   currentmv = abs(currentmv);
   o2_percentage = (currentmv / o2_calibration_voltage) * 20.9;
   sensor_voltage = currentmv * adc_multiplier;
-  Serial.println(o2_percentage);
-  
-  if (o2_percentage > 40.0) {
-    digitalWrite(led_pin, HIGH);
-  } else {
-    digitalWrite(led_pin, LOW);
-  }
-  display_status();
 }
 
-void read_sensor_to_running_average() {
+void read_sensor_to_running_average()
+{
   int16_t millivolts = 0;
   millivolts = adc_converter.readADC_Differential_0_1();
   running_average.addValue(millivolts);
 }
 
-int calibrate_o2(int p_address) {
-  // show "calibrating"
-  oled_display_text(F("Calibrating"), 2);
-
-  for (int i = 0; i <= running_average_size; i++) {
+void calibrate_o2()
+{
+  for (int i = 0; i <= running_average_size; i++)
+  {
     read_sensor_to_running_average();
+    delay(loop_delay_ms);
   }
-
-  double currentAverage = running_average.getAverage();
-  currentAverage = abs(currentAverage);
-  memory_write_int(p_address, currentAverage); // write to eeprom
-
-  // show the user that we are currently calibrating for 1 second..
-  delay(1000);
-  button_active = 0;
-  
-  return currentAverage;
-}
-
-void oled_display_text(const __FlashStringHelper *text, int text_size) {
+  double currentmv = abs(running_average.getAverage());
+  memory_write_int(calibration_memory_address, currentmv); // write to eeprom
+  o2_calibration_voltage = currentmv;
+  // show "calibrating"
   oled_display.clearDisplay();
   oled_display.setTextColor(WHITE);
   oled_display.setCursor(0, 0);
-  oled_display.setTextSize(text_size);
-  oled_display.print(F("TEST"));
+  oled_display.setTextSize(2);
+  oled_display.println(F("Calibrated"));
+  oled_display.println(F("20.9% O2"));
   oled_display.display();
+  delay(500);
 }
 
-
-void display_status()
+void oled_display_text(const __FlashStringHelper *text, int text_size)
 {
   oled_display.clearDisplay();
   oled_display.setTextColor(WHITE);
   oled_display.setCursor(0, 0);
+  oled_display.setTextSize(text_size);
+  oled_display.print(text);
+  oled_display.display();
+}
 
-  if (sensor_voltage < 0.02) {
-    oled_display.setTextSize(2);
-    oled_display.println(F("Sensor"));
-    oled_display.print(F("Error!"));
-  } else {
-    if (display_advanced_mode == 0) {
-      oled_display.setTextSize(4);
-      if (o2_percentage<100){
-        oled_display.print(o2_percentage, 1);
-        oled_display.println(F("%"));
-      } else {
-        oled_display.print(o2_percentage, 1);
-      }
-    }
-    if (display_advanced_mode == 1) {
+int drawing_iteration = 0;
+void draw_status()
+{
+  drawing_iteration++;
+  oled_display.clearDisplay();
+  oled_display.setTextColor(WHITE);
+  oled_display.setCursor(0, 0);
 
-      oled_display.setTextSize(1);
-      oled_display.println(F("   O2    "));
-
-      oled_display.setTextSize(2);
-      oled_display.print(o2_percentage, 1);
+  if (sensor_voltage < 0.02)
+  {
+    oled_display.setTextSize(1);
+    oled_display.println(F("Error: O2 < 0.02 mv"));
+    oled_display.println(F("Is the sensor connected?"));
+    return;
+  }
+  if (!mode_display_advanced)
+  {
+    oled_display.setTextSize(4);
+    
+    oled_display.print(o2_percentage, 1);
+    if (o2_percentage < 100)
+    {
       oled_display.println(F("%"));
-
-      oled_display.setTextSize(1);
-      oled_display.print(sensor_voltage, 2);
-      oled_display.print(F("mv"));
     }
 
-    if (button_active % 4) {
-      oled_display.setTextSize(1);
-      oled_display.setCursor(115, 25);
-      oled_display.setTextColor(WHITE);
-      oled_display.print(F("."));
-    }
-    // menu
-    if (button_secs_held < button_holdtime_maximum && button_active > 16) {
-      oled_display.setTextSize(1);
-      oled_display.setCursor(0, 18);
-      oled_display.setTextColor(BLACK, WHITE);
-      if (button_secs_held >= button_holdtime_calibration && button_secs_held < button_holdtime_advanced) {
-        oled_display.print(F("   CAL    "));
-      }
-      if (button_secs_held >= button_holdtime_advanced && button_secs_held < button_holdtime_maximum) {
-        oled_display.print(F("   ADV    "));
-      }
-    }
+  } else {
+    oled_display.setTextSize(2);
+    oled_display.print(F("O2   "));
+    oled_display.print(o2_percentage, 1);
+    oled_display.println(F("%"));
+
+    oled_display.setTextSize(1);
+    oled_display.print(F("Voltage    "));
+    oled_display.print(sensor_voltage, 2);
+    oled_display.println(F("mv"));
+    oled_display.print(F("Calibrated "));
+    oled_display.print(o2_calibration_voltage*adc_multiplier, 2);
+    oled_display.println(F("mv"));
+  }
+
+  if (drawing_iteration % 4 == 0) {
+    oled_display.setTextSize(1);
+    oled_display.setCursor(115, 25);
+    oled_display.setTextColor(WHITE);
+    oled_display.print(F("."));
   }
   oled_display.display();
 }
 
-void lock_screen() {
-
+void draw_lock_screen()
+{
   oled_display.setTextSize(1);
-  if (display_advanced_mode == 0)
-  {
-    oled_display.setTextColor(BLACK, WHITE);
-  }
-  else oled_display.setTextColor(WHITE);
+  oled_display.setTextColor(BLACK, WHITE);
   oled_display.setCursor(90, 25);
   oled_display.print(F(" HOLD "));
   oled_display.display();
-  
-  int pause = 5000;
-  for (int i = 0; i < pause; ++i) {
-    while (digitalRead(button_pin) == HIGH) {
-    }
-  }
-  button_active = 0;
 }
 
-void oled_display_splash() {
-  if (!show_splash) {
+void draw_help()
+{
+  if (draw_help_done)
+  {
     return;
   }
-
-  show_splash = false;
+  draw_help_done = true;
   oled_display.clearDisplay();
   oled_display.setTextColor(WHITE);
   oled_display.setCursor(0, 0);
   oled_display.setTextSize(1);
-  oled_display.println(F("O2 Analyzer"));
-  oled_display.println(F("0s: HOLD"));
-  oled_display.println(F("1s: CALIBRATE"));
-  oled_display.println(F("2s: ADV / BASIC MODE"));
+  oled_display.println(F("Short press: HOLD"));
+  oled_display.println(F("Long press: CALIBRATE"));
+  oled_display.println(F("Double press: ADV"));
+  oled_display.println(F("Press to start"));
   oled_display.display();
-  delay(3000);
-  button_active = 0;
 }
 
 void memory_write_int(int p_address, int p_value)
