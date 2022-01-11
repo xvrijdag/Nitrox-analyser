@@ -35,7 +35,6 @@ void read_sensor_to_running_average();
 void draw_status();
 void draw_lock_screen();
 void draw_help();
-void oled_display_text(const __FlashStringHelper *text, int text_size);
 enum program_mode
 {
   MODE_HELP,
@@ -80,10 +79,6 @@ double sensor_voltage = 0.0;
 const int single_click_timing = 250; // a single click is when only one click occurs within 500ms
 const int hold_click_timing = 1000;  // a long press click is when one click is constant for 2000ms
 
-bool previous_state = false;
-long button_millis_held;    // How long the button was held (milliseconds)
-long button_prev_secs_held; // How long the button was held in the previous check
-long button_time_released;
 ///
 /// Menu / display state
 ///
@@ -91,6 +86,19 @@ int calibration_memory_address = 0;
 
 program_mode current_mode = MODE_HELP;
 bool draw_help_done = false;
+
+int mode_counter = 0;
+int loop_delay_ms = 5; // execute loop every 10 ms
+bool mode_display_advanced = false;
+bool mode_display_hold = false;
+
+// last time the button was entered
+unsigned long last_down = 0;
+unsigned long last_up = 0;
+bool double_click_started = true;
+bool last_pressed_state = false;
+
+int drawing_iteration = 0; // needed for flashing dot
 
 void setup(void)
 {
@@ -116,10 +124,7 @@ void setup(void)
     calibrate_o2();
   }
 }
-int mode_counter = 0;
-int loop_delay_ms = 5; // execute loop every 10 ms
-bool mode_display_advanced = false;
-bool mode_display_hold = false;
+
 void loop(void)
 {
   mode_counter++;
@@ -208,12 +213,6 @@ void handle_button_press(int action)
     return;
   }
 }
-
-// last time the button was entered
-unsigned long last_down = 0;
-unsigned long last_up = 0;
-bool double_click_started = true;
-bool last_pressed_state = false;
 
 void reset_button_status(bool current_status)
 {
@@ -318,20 +317,9 @@ void calibrate_o2()
   oled_display.println(F("Calibrated"));
   oled_display.println(F("20.9% O2"));
   oled_display.display();
-  delay(500);
+  delay(1000);
 }
 
-void oled_display_text(const __FlashStringHelper *text, int text_size)
-{
-  oled_display.clearDisplay();
-  oled_display.setTextColor(WHITE);
-  oled_display.setCursor(0, 0);
-  oled_display.setTextSize(text_size);
-  oled_display.print(text);
-  oled_display.display();
-}
-
-int drawing_iteration = 0;
 void draw_status()
 {
   drawing_iteration++;
@@ -339,24 +327,29 @@ void draw_status()
   oled_display.setTextColor(WHITE);
   oled_display.setCursor(0, 0);
 
-  if (sensor_voltage < 0.02)
+  if (sensor_voltage < 0.05)
   {
     oled_display.setTextSize(1);
-    oled_display.println(F("Error: O2 < 0.02 mv"));
-    oled_display.println(F("Is the sensor connected?"));
+    oled_display.println(F("Error: O2 < 0.05 mv"));
+    oled_display.println(F("Is the sensor"));
+    oled_display.println(F("connected?"));
+    oled_display.display();
     return;
   }
+  //basic mode
   if (!mode_display_advanced)
   {
     oled_display.setTextSize(4);
-    
     oled_display.print(o2_percentage, 1);
     if (o2_percentage < 100)
     {
       oled_display.println(F("%"));
     }
 
-  } else {
+  } 
+  //advanced screen
+  else 
+  {
     oled_display.setTextSize(2);
     oled_display.print(F("O2   "));
     oled_display.print(o2_percentage, 1);
@@ -370,8 +363,9 @@ void draw_status()
     oled_display.print(o2_calibration_voltage*adc_multiplier, 2);
     oled_display.println(F("mv"));
   }
-
-  if (drawing_iteration % 4 == 0) {
+  //flashing dot in right lower corner
+  if (drawing_iteration % 4 == 0) 
+  {
     oled_display.setTextSize(1);
     oled_display.setCursor(115, 25);
     oled_display.setTextColor(WHITE);
